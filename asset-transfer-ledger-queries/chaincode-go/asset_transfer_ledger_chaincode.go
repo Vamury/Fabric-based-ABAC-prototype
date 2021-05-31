@@ -96,10 +96,18 @@ type Asset struct {
 	AppraisedValue int    `json:"appraisedValue"`
 }
 
+type Assignment struct {
+	ID		string `json:assignmentID`
+	PublicKey	string `json:pk`
+	Attribute	string `json:attribute`
+	TimeStamp	string `json:timestamp`
+	Seed 		string `json:seed`
+}
+
 // HistoryQueryResult structure used for returning result of history query
 type HistoryQueryResult struct {
 	Record    *Asset    `json:"record"`
-	TxId     string    `json:"txId"`
+	TxId      string    `json:"txId"`
 	Timestamp time.Time `json:"timestamp"`
 	IsDelete  bool      `json:"isDelete"`
 }
@@ -154,6 +162,50 @@ func (t *SimpleChaincode) CreateAsset(ctx contractapi.TransactionContextInterfac
 	return ctx.GetStub().PutState(colorNameIndexKey, value)
 }
 
+func (t *SimpleChaincode) CreateAssignment(ctx contractapi.TransactionContextInterface, assignmentID, pk string, attribute string, timestamp string, seed string) error {
+	exists, err := t.AssignmentExists(ctx, assignmentID)
+	if err != nil {
+		return fmt.Errorf("failed to get assignment: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("assignment already exists: %s", assignmentID)
+	}
+
+	assignment := &Assignment{
+		ID:		assignmentID,
+		PublicKey:      pk,
+		Attribute:      attribute,
+		TimeStamp: 	timestamp,
+		Seed: 		seed,
+	}
+	assignmentBytes, err := json.Marshal(assignment)
+	if err != nil {
+		return err
+	}
+
+	return ctx.GetStub().PutState(assignmentID, assignmentBytes)
+	/*err = ctx.GetStub().PutState(assignmentID, assignmentBytes)
+	if err != nil {
+		return err
+	}
+
+	//  Create an index to enable color-based range queries, e.g. return all blue assets.
+	//  An 'index' is a normal key-value entry in the ledger.
+	//  The key is a composite key, with the elements that you want to range query on listed first.
+	//  In our case, the composite key is based on indexName~color~name.
+	//  This will enable very efficient state range queries based on composite keys matching indexName~color~*
+
+	userNameIndexKey, err := ctx.GetStub().CreateCompositeKey(index, []string{assignment.PublicKey, assignment.ID})
+	if err != nil {
+		return err
+	}
+
+	//  Save index entry to world state. Only the key name is needed, no need to store a duplicate copy of the asset.
+	//  Note - passing a 'nil' value will effectively delete the key from state, therefore we pass null character as value
+	value := []byte{0x00}
+	return ctx.GetStub().PutState(userNameIndexKey, value)*/
+}
+
 // ReadAsset retrieves an asset from the ledger
 func (t *SimpleChaincode) ReadAsset(ctx contractapi.TransactionContextInterface, assetID string) (*Asset, error) {
 	assetBytes, err := ctx.GetStub().GetState(assetID)
@@ -194,6 +246,47 @@ func (t *SimpleChaincode) DeleteAsset(ctx contractapi.TransactionContextInterfac
 	return ctx.GetStub().DelState(colorNameIndexKey)
 }
 
+// ReadAsset retrieves an asset from the ledger
+func (t *SimpleChaincode) ReadAssignment(ctx contractapi.TransactionContextInterface, assignmentID string) (error) {
+	assignmentBytes, err := ctx.GetStub().GetState(assignmentID)
+	if err != nil {
+		return fmt.Errorf("failed to get assignment %s: %v", assignmentID, err)
+	}
+	if assignmentBytes == nil {
+		return fmt.Errorf("assignment %s does not exist", assignmentID)
+	}
+
+	var assignment Assignment
+	err = json.Unmarshal(assignmentBytes, &assignment)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// DeleteAsset removes an asset key-value pair from the ledger
+func (t *SimpleChaincode) DeleteAssignment(ctx contractapi.TransactionContextInterface, assignmentID string) error {
+	err := t.ReadAssignment(ctx, assignmentID)
+	if err != nil {
+		return err
+	}
+
+	err2 := ctx.GetStub().DelState(assignmentID)
+	if err2 != nil {
+		return fmt.Errorf("failed to delete assignment %s: %v", assignmentID, err)
+	}
+
+	return err2
+	/*userNameIndexKey, err := ctx.GetStub().CreateCompositeKey(index, []string{assignment.PublicKey, assignment.ID})
+	if err != nil {
+		return err
+	}
+
+	// Delete index entry
+	return ctx.GetStub().DelState(userNameIndexKey)*/
+}
+
 // TransferAsset transfers an asset by setting a new owner name on the asset
 func (t *SimpleChaincode) TransferAsset(ctx contractapi.TransactionContextInterface, assetID, newOwner string) error {
 	asset, err := t.ReadAsset(ctx, assetID)
@@ -228,6 +321,9 @@ func constructQueryResponseFromIterator(resultsIterator shim.StateQueryIteratorI
 
 	return assets, nil
 }
+
+// constructQueryResponseFromIterator constructs a slice of assets from the resultsIterator
+
 
 // GetAssetsByRange performs a range query based on the start and end keys provided.
 // Read-only function results are not typically submitted to ordering. If the read-only
@@ -324,6 +420,48 @@ func getQueryResultForQueryString(ctx contractapi.TransactionContextInterface, q
 	defer resultsIterator.Close()
 
 	return constructQueryResponseFromIterator(resultsIterator)
+}
+
+
+// QueryAssets uses a query string to perform a query for assets.
+// Query string matching state database syntax is passed in and executed as is.
+// Supports ad hoc queries that can be defined at runtime by the client.
+// If this is not desired, follow the QueryAssetsForOwner example for parameterized queries.
+// Only available on state databases that support rich query (e.g. CouchDB)
+// Example: Ad hoc rich query
+func (t *SimpleChaincode) QueryAssignments(ctx contractapi.TransactionContextInterface, queryString string) ([]*Assignment, error) {
+	return getQueryResultForQueryStringB(ctx, queryString)
+}
+
+// getQueryResultForQueryString executes the passed in query string.
+// The result set is built and returned as a byte array containing the JSON results.
+func getQueryResultForQueryStringB(ctx contractapi.TransactionContextInterface, queryString string) ([]*Assignment, error) {
+	resultsIterator, err := ctx.GetStub().GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	return constructQueryResponseFromIteratorB(resultsIterator)
+}
+
+
+func constructQueryResponseFromIteratorB(resultsIterator shim.StateQueryIteratorInterface) ([]*Assignment, error) {
+	var assignments []*Assignment
+	for resultsIterator.HasNext() {
+		queryResult, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		var assignment Assignment
+		err = json.Unmarshal(queryResult.Value, &assignment)
+		if err != nil {
+			return nil, err
+		}
+		assignments = append(assignments, &assignment)
+	}
+
+	return assignments, nil
 }
 
 // GetAssetsByRangeWithPagination performs a range query based on the start and end key,
@@ -431,6 +569,33 @@ func (t *SimpleChaincode) AssetExists(ctx contractapi.TransactionContextInterfac
 	}
 
 	return assetBytes != nil, nil
+}
+
+func (t *SimpleChaincode) AssignmentExists(ctx contractapi.TransactionContextInterface, assignmentID string) (bool, error) {
+	assignmentBytes, err := ctx.GetStub().GetState(assignmentID)
+	if err != nil {
+		return false, fmt.Errorf("failed to read assignment %s from world state. %v", assignmentID, err)
+	}
+
+	return assignmentBytes != nil, nil
+}
+
+func (t *SimpleChaincode) Verification(ctx contractapi.TransactionContextInterface, QueryString string) (bool, error) {
+	assignmentBytes, err := ctx.GetStub().GetQueryResult(QueryString)
+	if err != nil {
+		return false, fmt.Errorf("failed to read assignment with %s from world state. %v", QueryString, err)
+	}
+	assignmentBytes.Close()
+
+	if !assignmentBytes.HasNext() {
+		return false, nil
+	}
+	che, err := assignmentBytes.Next()
+	if che.Value == nil {
+		return false, err
+	}
+	
+	return assignmentBytes != nil, nil
 }
 
 // InitLedger creates the initial set of assets in the ledger.
